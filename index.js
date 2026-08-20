@@ -1,14 +1,40 @@
 require('dotenv').config();
+const { execSync } = require('child_process');
 const qrcode = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const { askAI } = require('./ai');
 const { setReminderInMinutes, setDailyReminder } = require('./reminder');
 
+// Cari lokasi Chromium yang sudah terinstall di server (lewat nixpacks.toml),
+// supaya tidak pakai Chrome bawaan Puppeteer yang sering error di Railway.
+function findChromiumPath() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  const candidates = ['chromium', 'chromium-browser', 'google-chrome-stable'];
+  for (const bin of candidates) {
+    try {
+      const path = execSync(`which ${bin}`, { stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim();
+      if (path) return path;
+    } catch (e) {
+      // lanjut coba kandidat berikutnya
+    }
+  }
+  return undefined; // biarkan Puppeteer pakai default kalau tidak ketemu (misal saat jalan di lokal/Termux)
+}
+
+const chromiumPath = findChromiumPath();
+console.log('Menggunakan Chromium di:', chromiumPath || '(default bawaan Puppeteer)');
+
 const client = new Client({
   authStrategy: new LocalAuth(), // menyimpan sesi login agar tidak perlu scan QR tiap kali
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    executablePath: chromiumPath,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
   },
 });
 
@@ -110,3 +136,4 @@ client.on('message', async (msg) => {
 });
 
 client.initialize();
+            
