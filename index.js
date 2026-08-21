@@ -29,7 +29,6 @@ console.log('Menggunakan Chromium di:', chromiumPath || '(default bawaan Puppete
 // daripada scan QR. Format nomor: kode negara + nomor tanpa + atau 0 di depan.
 // Contoh Indonesia: 6281234567890
 const phoneNumberForPairing = process.env.WHATSAPP_PHONE_NUMBER;
-let pairingRequested = false;
 let botStatus = 'Menyiapkan bot...';
 
 // --- Web server sederhana untuk melihat status/kode pairing lewat browser ---
@@ -39,15 +38,16 @@ const server = http.createServer((req, res) => {
     <html>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta http-equiv="refresh" content="4">
+        <meta http-equiv="refresh" content="3">
         <title>Status Bot WhatsApp</title>
         <style>
-          body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #111; color: #fff; }
+          body { font-family: sans-serif; text-align: center; padding: 40px 16px; background: #111; color: #fff; }
+          h2 { font-size: 22px; line-height: 1.4; word-break: break-word; }
         </style>
       </head>
       <body>
         <h2>${botStatus}</h2>
-        <p style="color:#888; font-size:13px;">Halaman ini auto-refresh tiap 4 detik.</p>
+        <p style="color:#888; font-size:13px;">Halaman ini auto-refresh tiap 3 detik — buka ini langsung di browser HP kamu, jangan dari screenshot.</p>
       </body>
     </html>
   `);
@@ -74,18 +74,17 @@ const client = new Client({
 
 client.on('qr', async (qr) => {
   if (phoneNumberForPairing) {
-    if (!pairingRequested) {
-      pairingRequested = true;
-      try {
-        const code = await client.requestPairingCode(phoneNumberForPairing);
-        console.log('==============================');
-        console.log('KODE PAIRING KAMU:', code);
-        console.log('==============================');
-        botStatus = `Kode pairing kamu: ${code}`;
-      } catch (err) {
-        console.error('Gagal membuat kode pairing:', err);
-        botStatus = 'Gagal membuat kode pairing, cek nomor di WHATSAPP_PHONE_NUMBER.';
-      }
+    try {
+      const code = await client.requestPairingCode(phoneNumberForPairing);
+      const expiresAt = new Date(Date.now() + 60000).toLocaleTimeString('id-ID');
+      console.log('==============================');
+      console.log('KODE PAIRING KAMU (buru-buru, cuma berlaku ~1 menit):', code);
+      console.log('Kadaluarsa sekitar jam:', expiresAt);
+      console.log('==============================');
+      botStatus = `Kode pairing kamu: ${code} (buruan, cuma berlaku ~1 menit! Kode baru otomatis muncul lagi kalau ini kadaluarsa)`;
+    } catch (err) {
+      console.error('Gagal membuat kode pairing:', err);
+      botStatus = 'Gagal membuat kode pairing, cek nomor di WHATSAPP_PHONE_NUMBER.';
     }
     return; // tidak perlu tampilkan QR kalau pakai mode pairing code
   }
@@ -118,9 +117,47 @@ const HELP_TEXT = `*Menu Bot*
 !reminder <menit> <pesan> - reminder sekali (contoh: !reminder 10 minum obat)
 !reminderharian <jam:menit> <pesan> - reminder tiap hari (contoh: !reminderharian 07:00 olahraga)`;
 
+// --- Whitelist: batasi siapa yang boleh pakai bot ---
+// Isi di Railway Variables (opsional). Kalau kosong/tidak diisi, bot terbuka untuk semua orang.
+// ALLOWED_NUMBERS: nomor pribadi yang boleh chat langsung ke bot, pisahkan pakai koma.
+//   Format tiap nomor: kode negara + nomor, tanpa + / 0 di depan. Contoh: 6281234567890,6289876543210
+// ALLOWED_GROUPS: ID grup yang boleh pakai bot, pisahkan pakai koma.
+//   Cara lihat ID grup: ketik !groupid di dalam grup itu setelah bot join, nanti bot balas ID-nya.
+const allowedNumbers = (process.env.ALLOWED_NUMBERS || '')
+  .split(',').map((n) => n.trim()).filter(Boolean);
+const allowedGroups = (process.env.ALLOWED_GROUPS || '')
+  .split(',').map((g) => g.trim()).filter(Boolean);
+
+function isAuthorized(msg) {
+  const chatId = msg.from;
+  const isGroup = chatId.endsWith('@g.us');
+
+  if (isGroup) {
+    if (allowedGroups.length === 0) return true; // tidak ada batasan grup = semua grup boleh
+    return allowedGroups.includes(chatId.replace('@g.us', ''));
+  } else {
+    if (allowedNumbers.length === 0) return true; // tidak ada batasan nomor = semua nomor boleh
+    const senderNumber = chatId.replace('@c.us', '');
+    return allowedNumbers.includes(senderNumber);
+  }
+}
+
 client.on('message', async (msg) => {
   const text = msg.body.trim();
   const chatId = msg.from;
+
+  // Perintah khusus untuk lihat ID grup (tetap bisa dipakai siapa saja, supaya admin bisa setup whitelist)
+  if (text.trim().toLowerCase() === '!groupid') {
+    if (chatId.endsWith('@g.us')) {
+      await msg.reply(`ID grup ini: ${chatId.replace('@g.us', '')}`);
+    } else {
+      await msg.reply('Perintah ini cuma bisa dipakai di dalam grup.');
+    }
+    return;
+  }
+
+  // Abaikan kalau pengirim/grup tidak ada di whitelist
+  if (!isAuthorized(msg)) return;
 
   // Abaikan pesan yang bukan command supaya tidak spam auto-reply ke semua pesan
   if (!text.startsWith('!')) return;
@@ -191,4 +228,4 @@ client.on('message', async (msg) => {
 });
 
 client.initialize();
-      
+                                          
