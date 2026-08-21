@@ -1,13 +1,12 @@
 require('dotenv').config();
 const { execSync } = require('child_process');
 const http = require('http');
-const qrcode = require('qrcode-terminal');
-const QRCode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const { askAI } = require('./ai');
 const { setReminderInMinutes, setDailyReminder } = require('./reminder');
 
-// Cari lokasi Chromium yang sudah terinstall di server (lewat nixpacks.toml),
+// Cari lokasi Chromium yang sudah terinstall di server,
 // supaya tidak pakai Chrome bawaan Puppeteer yang sering error di Railway.
 function findChromiumPath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -26,76 +25,41 @@ function findChromiumPath() {
 const chromiumPath = findChromiumPath();
 console.log('Menggunakan Chromium di:', chromiumPath || '(default bawaan Puppeteer)');
 
-// --- Web server sederhana untuk menampilkan QR code sebagai gambar asli (mudah discan) ---
-let latestQrDataUrl = null;
+// Jika WHATSAPP_PHONE_NUMBER diisi di Variables, bot pakai kode pairing (ketik manual di WhatsApp)
+// daripada scan QR. Format nomor: kode negara + nomor tanpa + atau 0 di depan.
+// Contoh Indonesia: 6281234567890
+const phoneNumberForPairing = process.env.WHATSAPP_PHONE_NUMBER;
+let pairingRequested = false;
 let botStatus = 'Menyiapkan bot...';
 
-const server = http.createServer(async (req, res) => {
-  if (phoneNumberForPairing) {
-    // Mode kode pairing: tampilkan status/kode sebagai teks besar
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`
-      <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <meta http-equiv="refresh" content="4">
-          <title>Kode Pairing Bot WhatsApp</title>
-          <style>
-            body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #111; color: #fff; }
-            .code { font-size: 42px; letter-spacing: 6px; font-weight: bold; margin-top: 20px; color: #25D366; }
-          </style>
-        </head>
-        <body>
-          <h2>${botStatus}</h2>
-          <p style="color:#888; font-size:13px;">Halaman ini auto-refresh tiap 4 detik.</p>
-        </body>
-      </html>
-    `);
-    return;
-  }
-
-  if (latestQrDataUrl) {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`
-      <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <meta http-equiv="refresh" content="5">
-          <title>Scan QR Bot WhatsApp</title>
-          <style>
-            body { font-family: sans-serif; text-align: center; padding: 20px; background: #111; color: #fff; }
-            img { width: 280px; height: 280px; margin-top: 20px; }
-          </style>
-        </head>
-        <body>
-          <h2>Scan QR code ini pakai WhatsApp</h2>
-          <p>WhatsApp &rarr; Setelan &rarr; Perangkat Tertaut &rarr; Tautkan Perangkat</p>
-          <img src="${latestQrDataUrl}" />
-          <p style="color:#888; font-size:12px;">Halaman ini auto-refresh tiap 5 detik selama QR belum discan.</p>
-        </body>
-      </html>
-    `);
-  } else {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`
-      <html>
-        <head><meta http-equiv="refresh" content="3"></head>
-        <body style="font-family: sans-serif; text-align: center; padding: 40px;">
-          <h2>${botStatus}</h2>
-          <p>Halaman ini akan otomatis refresh...</p>
-        </body>
-      </html>
-    `);
-  }
+// --- Web server sederhana untuk melihat status/kode pairing lewat browser ---
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(`
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="refresh" content="4">
+        <title>Status Bot WhatsApp</title>
+        <style>
+          body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #111; color: #fff; }
+        </style>
+      </head>
+      <body>
+        <h2>${botStatus}</h2>
+        <p style="color:#888; font-size:13px;">Halaman ini auto-refresh tiap 4 detik.</p>
+      </body>
+    </html>
+  `);
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Web server jalan di port ${PORT}. Buka domain Railway kamu di browser untuk lihat QR code.`);
+  console.log(`Web server jalan di port ${PORT}.`);
 });
 
 const client = new Client({
-  authStrategy: new LocalAuth(), // menyimpan sesi login agar tidak perlu scan QR tiap kali
+  authStrategy: new LocalAuth(), // menyimpan sesi login agar tidak perlu login ulang tiap kali
   puppeteer: {
     headless: true,
     executablePath: chromiumPath,
@@ -107,12 +71,6 @@ const client = new Client({
     ],
   },
 });
-
-// Jika WHATSAPP_PHONE_NUMBER diisi di Variables, bot pakai kode pairing (ketik manual)
-// daripada scan QR. Format nomor: kode negara + nomor tanpa + atau 0 di depan.
-// Contoh Indonesia: 6281234567890
-const phoneNumberForPairing = process.env.WHATSAPP_PHONE_NUMBER;
-let pairingRequested = false;
 
 client.on('qr', async (qr) => {
   if (phoneNumberForPairing) {
@@ -133,18 +91,12 @@ client.on('qr', async (qr) => {
   }
 
   console.log('Scan QR code ini dengan WhatsApp di HP kamu:');
-  qrcode.generate(qr, { small: true });
-  try {
-    latestQrDataUrl = await QRCode.toDataURL(qr, { width: 400 });
-    botStatus = 'Menunggu scan QR code...';
-  } catch (err) {
-    console.error('Gagal membuat gambar QR:', err);
-  }
+  qrcodeTerminal.generate(qr, { small: true });
+  botStatus = 'Menunggu scan QR code (lihat Deploy Logs)...';
 });
 
 client.on('ready', () => {
   console.log('✅ Bot WhatsApp siap digunakan!');
-  latestQrDataUrl = null;
   botStatus = '✅ Bot WhatsApp sudah aktif dan terhubung!';
 });
 
@@ -239,4 +191,4 @@ client.on('message', async (msg) => {
 });
 
 client.initialize();
-    
+      
